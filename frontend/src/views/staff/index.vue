@@ -39,7 +39,7 @@
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in rowActions(row)"
               :key="action"
               class="link"
               type="button"
@@ -47,6 +47,7 @@
             >
               {{ action }}
             </button>
+            <span v-if="!rowActions(row).length" class="muted">无可用动作</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -67,12 +68,10 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | string[] | null>
 
 const ENDPOINT = '/api/staff'
 const columns = ["员工编号", "姓名", "技术职称", "资质证书", "授权项目", "在岗状态", "考核日期", "考核结果"]
-const actions = ["安排培训", "确认离岗", "恢复在岗"]
-const statuses = ["在岗", "培训中", "离岗", "停岗"]
 const stats = [{"label": "在岗人员", "value": 0}, {"label": "培训中人员", "value": 0}, {"label": "离岗人员", "value": 0}]
 
 const rows = ref<Row[]>([])
@@ -94,15 +93,31 @@ function openCreate() {
   errorMessage.value = '检测员登记入口尚未接入审批流'
 }
 
+function rowActions(row: Row): string[] {
+  const available = row.available_actions
+  return Array.isArray(available) ? available : []
+}
+
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action, version: row.version ?? 1 } }),
     })
+    const payload = await response.json().catch(() => null)
+    if (response.status === 409) {
+      // 并发冲突或状态已变化：以后端说明为准，刷新列表拿到最新按钮
+      errorMessage.value = payload?.detail ?? '该记录刚被他人变更，请刷新后重试'
+      await reload()
+      return
+    }
     if (!response.ok) {
       throw new Error('检测人员动作未生效，请稍后重试')
+    }
+    if (payload && payload.ok === false) {
+      errorMessage.value = payload.message ?? '检测人员动作未生效'
+      return
     }
     await reload()
   } catch (error) {

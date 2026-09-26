@@ -52,8 +52,15 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     """对单条检测员执行安排培训、确认离岗、恢复在岗；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    raw_version = payload.values.get("version")
+    try:
+        version = int(raw_version) if raw_version is not None else None
+    except (TypeError, ValueError):
+        return ActionResult(ok=False, message="记录版本号格式不正确，请刷新列表后重试")
+    entry, message, status_code = service.run_action(entry_id, action, version)
     if entry is None:
+        if status_code == 409:
+            raise HTTPException(status_code=409, detail=message)
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
 
