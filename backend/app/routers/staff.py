@@ -6,20 +6,20 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.staff import StaffService
+from app.services.staff import StaffService, VersionConflict
 
 router = APIRouter(prefix="/api/staff", tags=["检测人员"])
 
 service = StaffService()
 
 LIST_FIELDS = ["员工编号", "姓名", "技术职称", "资质证书", "授权项目", "在岗状态", "考核日期", "考核结果"]
-STATUSES = ["在岗", "培训中", "离岗", "停岗"]
+STATUSES = ["在岗", "培训中", "离岗", "停岗", "已归档"]
 
 
 @router.get("", response_model=PageResult[dict])
 def list_entries(
     keyword: str | None = Query(default=None, description="按员工编号检索"),
-    status: str | None = Query(default=None, description="在岗、培训中、离岗、停岗"),
+    status: str | None = Query(default=None, description="在岗、培训中、离岗、停岗、已归档"),
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
@@ -50,9 +50,17 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条检测员执行安排培训、确认离岗、恢复在岗；不允许的动作会被拦下并说明原因。"""
+    """对单条检测员执行状态流转；版本号对不上时返回 409，避免后提交覆盖先完成的结果。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    raw_version = payload.values.get("version")
+    try:
+        expected_version = int(raw_version) if raw_version is not None else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="版本号必须是整数")
+    try:
+        entry, message = service.run_action(entry_id, action, expected_version=expected_version)
+    except VersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)

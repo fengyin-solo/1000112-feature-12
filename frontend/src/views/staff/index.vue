@@ -39,7 +39,7 @@
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in availableActions(row)"
               :key="action"
               class="link"
               type="button"
@@ -47,6 +47,7 @@
             >
               {{ action }}
             </button>
+            <span v-if="!availableActions(row).length">—</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -71,8 +72,13 @@ type Row = Record<string, string | number | null>
 
 const ENDPOINT = '/api/staff'
 const columns = ["员工编号", "姓名", "技术职称", "资质证书", "授权项目", "在岗状态", "考核日期", "考核结果"]
-const actions = ["安排培训", "确认离岗", "恢复在岗"]
-const statuses = ["在岗", "培训中", "离岗", "停岗"]
+// 服务端会随每行下发 available_actions；这里的映射只是接口异常时的兜底。
+const STATUS_ACTIONS: Record<string, string[]> = {
+  在岗: ['安排培训', '确认离岗'],
+  培训中: ['恢复在岗', '退回', '确认离岗'],
+  离岗: ['恢复在岗', '归档'],
+}
+const statuses = ["在岗", "培训中", "离岗", "停岗", "已归档"]
 const stats = [{"label": "在岗人员", "value": 0}, {"label": "培训中人员", "value": 0}, {"label": "离岗人员", "value": 0}]
 
 const rows = ref<Row[]>([])
@@ -80,6 +86,14 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+function availableActions(row: Row): string[] {
+  const fromServer = row.available_actions
+  if (Array.isArray(fromServer)) {
+    return fromServer as string[]
+  }
+  return STATUS_ACTIONS[String(row.status ?? '')] ?? []
+}
 
 function resetFilters() {
   filters.value = {}
@@ -96,18 +110,25 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  let failure = ''
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action, version: row.version ?? null } }),
     })
+    const payload = await response.json().catch(() => null)
     if (!response.ok) {
-      throw new Error('检测人员动作未生效，请稍后重试')
+      throw new Error(payload?.detail ?? '检测人员动作未生效，请稍后重试')
     }
-    await reload()
+    if (payload && payload.ok === false) {
+      throw new Error(payload.message ?? '检测人员动作未生效，请稍后重试')
+    }
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '检测人员操作失败'
+    failure = error instanceof Error ? error.message : '检测人员操作失败'
   }
+  // 无论成败都重新拉取：按钮以服务端最新状态为准，退回、恢复、归档后不残留旧按钮。
+  await reload()
+  errorMessage.value = failure
 }
 
 async function reload() {
